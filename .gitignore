@@ -5,3 +5,4 @@ __pycache__
 src/spin_sdk.egg-info
 dist
 venv/
+.idea/

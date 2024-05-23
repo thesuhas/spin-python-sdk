@@ -1,5 +1,7 @@
 # Spin Python SDK
 
+**NOTE:** This is a modified version of the Spin SDK which contains instrumentation.
+
 This is an SDK for creating [Spin](https://github.com/fermyon/spin) apps using Python.
 
 Note that this SDK supersedes an earlier, experimental version, which may be
