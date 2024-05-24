@@ -223,14 +223,6 @@ class IncomingHandler(exports.IncomingHandler):
         OutgoingBody.finish(response_body, None)
 
 
-def send(request: Request) -> Response:
-    """Send an HTTP request and return a response or raise an error"""
-    print(f"Outgoing Request Callstack: {inspect.stack()}")
-    loop = PollLoop()
-    asyncio.set_event_loop(loop)
-    return loop.run_until_complete(send_async(request))
-
-
 async def send_async(request: Request) -> Response:
     match request.method:
         case "GET":
@@ -324,76 +316,73 @@ async def send_and_close(sink: Sink, data: bytes):
     sink.close()
 
 
-def make_request_and_send(method, uri, headers, body):
-    req = Request(method, uri, headers, body)
-    return send(req)
-
-
 # Filibuster functions - list
-@functools.wraps(make_request_and_send)
-def instrumented_request(request: Request) -> Response:
-    print("instrumented_send entering; method: " + request.method + " url: " + request.uri)
+def wrap_request(func):
+    @functools.wraps(func)
+    def instrumented_request(request: Request) -> Response:
+        print("instrumented_send entering; method: " + request.method + " url: " + request.uri)
 
-    def get_or_create_headers():
-        # request.headers = (
-        #     request.headers
-        #     if request.headers is not None
-        #     else CaseInsensitiveDict()
-        # )
-        return request.headers
+        def get_or_create_headers():
+            # request.headers = (
+            #     request.headers
+            #     if request.headers is not None
+            #     else CaseInsensitiveDict()
+            # )
+            return request.headers
 
-    def call_wrapped(additional_headers):
-        print("instrumented_send.call_wrapped entering")
-        response = send(request)
-        print("instrumented_send.call_wrapped exiting")
+        def call_wrapped(additional_headers):
+            print("instrumented_send.call_wrapped entering")
+            response = send(request)
+            print("instrumented_send.call_wrapped exiting")
+            return response
+
+        response = _instrumented_requests_call(
+            request.method, request.uri, call_wrapped, get_or_create_headers
+        )
+
+        print("instrumented_send exiting; method: " + request.method + " url: " + request.uri)
         return response
+    return instrumented_request
 
-    response = _instrumented_requests_call(
-        request.method, request.uri, call_wrapped, get_or_create_headers
-    )
+def wrap_send(func):
+    @functools.wraps(func)
+    def instrumented_send(request: Request, **kwargs) -> Response:
+        print("instrumented_request entering; method: " + request.method + " url: " + request.uri)
 
-    print("instrumented_send exiting; method: " + request.method + " url: " + request.uri)
-    return response
+        def get_or_create_headers():
+            headers = request.headers
+            if headers is None:
+                headers = {}
+                request.headers = headers
 
+            return headers
 
-@functools.wraps(send)
-def instrumented_send(self, method, url, *args, **kwargs):
-    print("instrumented_request entering; method: " + method + " url: " + url)
+        def call_wrapped(additional_headers):
+            print("instrumented_request.call_wrapped entering")
 
-    def get_or_create_headers():
-        headers = kwargs.get("headers")
-        if headers is None:
-            headers = {}
-            kwargs["headers"] = headers
+            # Merge headers: don't worry about collisions, we're only adding information.
+            if request.headers is not None:
+                headers = request.headers
+                for key in additional_headers:
+                    headers[key] = additional_headers[key]
+                request.headers = headers
+            else:
+               request.headers = additional_headers
 
-        return headers
+            response = send(request)
+            print("instrumented_request.call_wrapped exiting")
+            return response
 
-    def call_wrapped(additional_headers):
-        print("instrumented_request.call_wrapped entering")
+        response = _instrumented_requests_call(
+            request.method, request.uri, call_wrapped, get_or_create_headers, kwargs
+        )
 
-        # Merge headers: don't worry about collisions, we're only adding information.
-        if 'headers' in kwargs and kwargs['headers'] is not None:
-            headers = kwargs['headers']
-            for key in additional_headers:
-                headers[key] = additional_headers[key]
-            kwargs['headers'] = headers
-        else:
-            kwargs['headers'] = additional_headers
-
-        response = make_request_and_send(method, url, get_or_create_headers(), '')
-        print("instrumented_request.call_wrapped exiting")
+        print("instrumented_request exiting; method: " + request.method + " url: " + request.uri)
         return response
-
-    response = _instrumented_requests_call(
-        self, method, url, call_wrapped, get_or_create_headers, kwargs
-    )
-
-    print("instrumented_request exiting; method: " + method + " url: " + url)
-    return response
-
+    return instrumented_send
 
 def _instrumented_requests_call(
-        self, method: str, url: str, call_wrapped, get_or_create_headers, kwargs
+       method: str, url: str, call_wrapped, get_or_create_headers, kwargs
 ):
     generated_id = None
     has_execution_index = False
@@ -559,7 +548,7 @@ def _instrumented_requests_call(
                 incoming_origin_vclock = vclock_fromstring(incoming_origin_vclock_string)
             else:
                 incoming_origin_vclock = vclock_new()
-            response = _record_call(self, method, [url], callsite_file, callsite_line, full_traceback_hash, vclock,
+            response = _record_call(method, [url], callsite_file, callsite_line, full_traceback_hash, vclock,
                                     incoming_origin_vclock, execution_index_tostring(execution_index), kwargs)
 
             if response is not None:
@@ -652,7 +641,7 @@ def _instrumented_requests_call(
         print("_instrumented_requests_call got response!")
 
         if has_execution_index:
-            _update_execution_index(self)
+            _update_execution_index()
 
         if should_inject_fault:
             # If the status code should be something else, change it.
@@ -667,7 +656,7 @@ def _instrumented_requests_call(
 
         # Notify the filibuster server of the actual response.
         if generated_id is not None:
-            _record_successful_response(self, generated_id, execution_index_tostring(execution_index), vclock,
+            _record_successful_response(generated_id, execution_index_tostring(execution_index), vclock,
                                         result)
 
         if result.raw and result.raw.version:
@@ -703,11 +692,11 @@ def _instrumented_requests_call(
             print("=> exception: " + str(exception))
 
             if has_execution_index:
-                _update_execution_index(self)
+                _update_execution_index()
 
             # Notify the filibuster server of the actual exception we encountered.
             if generated_id is not None:
-                _record_exceptional_response(self, generated_id, execution_index_tostring(execution_index), vclock,
+                _record_exceptional_response(generated_id, execution_index_tostring(execution_index), vclock,
                                              exception, should_sleep_interval, should_abort)
 
             if use_traceback:
@@ -719,7 +708,7 @@ def _instrumented_requests_call(
     return result
 
 
-def _record_call(self, method, args, callsite_file, callsite_line, full_traceback, vclock, origin_vclock,
+def _record_call(method, args, callsite_file, callsite_line, full_traceback, vclock, origin_vclock,
                  execution_index, kwargs):
     response = None
     parsed_content = None
@@ -802,7 +791,7 @@ def _update_execution_index():
     ei_and_vclock_mutex.release()
 
 
-def _record_successful_response(self, generated_id, execution_index, vclock, result):
+def _record_successful_response(generated_id, execution_index, vclock, result):
     # assumes no asynchrony or threads at calling service.
 
     if not (os.environ.get('DISABLE_SERVER_COMMUNICATION', '')) and counterexample is None:
@@ -833,7 +822,7 @@ def _record_successful_response(self, generated_id, execution_index, vclock, res
     return True
 
 
-def _record_exceptional_response(self, generated_id, execution_index, vclock, exception, should_sleep_interval,
+def _record_exceptional_response(generated_id, execution_index, vclock, exception, should_sleep_interval,
                                  should_abort):
     # assumes no asynchrony or threads at calling service.
 
@@ -879,3 +868,16 @@ def unique_request_hash(args):
     hash_string = "-".join(args)
     hex_digest = hashlib.md5(hash_string.encode()).hexdigest()
     return hex_digest
+
+@wrap_send
+def send(request: Request, **kwargs) -> Response:
+    """Send an HTTP request and return a response or raise an error"""
+    print(f"Outgoing Request Callstack: {inspect.stack()}")
+    loop = PollLoop()
+    asyncio.set_event_loop(loop)
+    return loop.run_until_complete(send_async(request))
+
+@wrap_request
+def make_request_and_send(method, uri, headers, body):
+    req = Request(method, uri, headers, body)
+    return send(req)
