@@ -38,7 +38,7 @@ def get_full_traceback_hash(service_name):
     raw_callsite = None
 
     for line in traceback.format_stack():
-        if service_name in line and TEST_PREFIX not in line and INSTRUMENTATION_PREFIX not in line:
+        if TEST_PREFIX not in line and INSTRUMENTATION_PREFIX not in line:
             raw_callsite = line
             break
 
@@ -65,8 +65,8 @@ def get_full_traceback_hash(service_name):
                     if "/" in quote and quote[0] != "/":
                         quote = quote.split("/", 1)[1]
                 # Remove absolute path information and keep things relative only to filibuster.
-                elif "filibuster" in quote:
-                    quote = quote.split("filibuster", 1)[1]
+                elif "spin_sdk" in quote:
+                    quote = quote.split("spin_sdk", 1)[1]
                     is_filibuster_stacktrace = True
             revised_quotes.append(quote)
         if is_filibuster_stacktrace:
