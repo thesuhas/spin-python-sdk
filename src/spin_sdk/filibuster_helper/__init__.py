@@ -49,7 +49,7 @@ def get_full_traceback_hash(service_name):
     callsite_line = callsite.group(2)
     print("=> callsite_file: " + callsite_file)
     print("=> callsite_line: " + callsite_line)
-    print("Before Formatting: " + '\n'.join(traceback.format_stack()))
+    # print("Before Formatting: " + '\n'.join(traceback.format_stack()))
     tracebacks = []
     for _traceback in traceback.format_stack():
         raw_quotes = _traceback.split("\"")
@@ -74,7 +74,7 @@ def get_full_traceback_hash(service_name):
             tracebacks.append(curr_traceback)
 
     full_traceback = "\n".join(tracebacks)
-    print(f"Stacktrace: {full_traceback}")
+    # print(f"Stacktrace: {full_traceback}")
     full_traceback_hash = hashlib.md5(full_traceback.encode()).hexdigest()
 
     return callsite_file, callsite_line, full_traceback_hash
