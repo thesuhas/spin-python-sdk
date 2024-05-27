@@ -40,13 +40,8 @@ from spin_sdk.nginx_http_special_response import get_response
 from spin_sdk.datatypes import TestExecution
 from pprint import pprint
 from spin_sdk.logger import warning, debug, notice, info
-
-from opentelemetry import context
-# from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
-# from opentelemetry.instrumentation.requests.version import __version__
-# from opentelemetry.instrumentation.utils import http_status_to_status_code
-# from opentelemetry.trace import SpanKind, get_tracer
-# from opentelemetry.trace.status import Status
+import uuid
+import time
 
 # A key to a context variable to avoid creating duplicate spans when instrumenting
 # both, Session.request and Session.send, since Session.request calls into Session.send
@@ -132,6 +127,104 @@ class Response:
     headers: MutableMapping[str, str]
     body: Optional[bytes]
 
+def _wrapped_before_request(func):
+    @functools.wraps(func)
+    def _before_request(self, request: IncomingRequest, response_out: ResponseOutparam):
+        # if _excluded_urls.url_disabled(flask.request.url):
+        #     return
+
+        # Each request needs to maintain some things independently of the global state (e.g.
+        # execution_index, vclock) for when we issue multiple requests. Unique request_ids
+        # can distinguish one request from another. Generate a new unique request_id if one
+        # doesn't already exist (new request), otherwise use the existing one.
+        headers = request.headers()
+        if headers.has('X-Filibuster-Request-Id') and headers.get('X-Filibuster-Request-Id') is not None:
+            request_id = headers['X-Filibuster-Request-Id']
+            debug("Using old request_id: " + request_id)
+        else:
+            request_id = str(uuid.uuid4())
+            debug("Using new request_id: " + request_id)
+        _filibuster_global_context_set_value(_FILIBUSTER_REQUEST_ID_KEY, request_id)
+        debug("** [FLASK] [" + get_service_name() + "]: request-id attached to context: " + str(_filibuster_global_context_get_value(_FILIBUSTER_REQUEST_ID_KEY)))
+
+        if headers.has('X-Filibuster-Execution-Index') and headers.get('X-Filibuster-Execution-Index') is not None:
+
+            payload = {
+                'instrumentation_type': 'request_received',
+                'generated_id': str(headers.get('X-Filibuster-Generated-Id')),
+                'execution_index': str(headers.get('X-Filibuster-Execution-Index')),
+                'target_service_name': get_service_name(),
+            }
+
+            # All this is responsible for doing is putting the header execution index into the context
+            # so that any requests that are triggered from this have the existing execution index.
+            _filibuster_global_context_set_value(_FILIBUSTER_EXECUTION_INDEX_KEY, headers.get('X-Filibuster-Execution-Index'))
+            debug("** [FLASK] [" + get_service_name() + "]: execution-index attached to context: " + str(_filibuster_global_context_get_value(_FILIBUSTER_EXECUTION_INDEX_KEY)))
+
+            # All this is responsible for doing is putting the header vclock into the context
+            # so that any requests that are triggered from this, know to merge the incoming vclock in.
+            _filibuster_global_context_set_value(_FILIBUSTER_VCLOCK_KEY, headers.get('X-Filibuster-VClock'))
+            debug("** [FLASK] [" + get_service_name() + "]: vclock attached to context: " + str(_filibuster_global_context_get_value(_FILIBUSTER_VCLOCK_KEY)))
+
+            # All this is responsible for doing is putting the header origin vclock into the context
+            # so that any requests that are triggered from this, know to merge the incoming vclock in.
+            _filibuster_global_context_set_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY, headers.get('X-Filibuster-Origin-VClock'))
+            debug("** [FLASK] [" + get_service_name() + "]: origin-vclock attached to context: " + str(_filibuster_global_context_get_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY)))
+
+            if not (os.environ.get('DISABLE_SERVER_COMMUNICATION', '')) and counterexample is None:
+                try:
+                    debug("Setting Filibuster instrumentation key...")
+                    _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
+
+                    make_request_and_send_normal('post', filibuster_update_url(filibuster_url), {}, payload)
+                except Exception as e:
+                    warning("Exception raised during instrumentation (_record_successful_response)!")
+                    print(e, file=sys.stderr)
+                finally:
+                    debug("Removing instrumentation key for Filibuster.")
+                    # context.detach(token)
+
+        # If we should delay the request to simulate timeouts, do it.
+        if headers.has('X-Filibuster-Forced-Sleep') and headers.get('X-Filibuster-Forced-Sleep') is not None:
+            sleep_interval_string = headers.get('X-Filibuster-Forced-Sleep')
+            sleep_interval = int(sleep_interval_string)
+            if sleep_interval != 0:
+                time.sleep(sleep_interval)
+        #
+        # flask_request_environ = flask.request.environ
+        # span_name = name_callback()
+        # token = context.attach(
+        #     propagators.extract(
+        #         otel_wsgi.carrier_getter, flask_request_environ
+        #     )
+        # )
+        #
+        # tracer = trace.get_tracer(__name__, __version__)
+        #
+        # span = tracer.start_span(
+        #     span_name,
+        #     kind=trace.SpanKind.SERVER,
+        #     start_time=flask_request_environ.get(_ENVIRON_STARTTIME_KEY),
+        # )
+        # if span.is_recording():
+        #     attributes = otel_wsgi.collect_request_attributes(
+        #         flask_request_environ
+        #     )
+        #     if flask.request.url_rule:
+        #         # For 404 that result from no route found, etc, we
+        #         # don't have a url_rule.
+        #         attributes["http.route"] = flask.request.url_rule.rule
+        #     for key, value in attributes.items():
+        #         span.set_attribute(key, value)
+        #
+        # activation = tracer.use_span(span, end_on_exit=True)
+        # activation.__enter__()
+        # flask_request_environ[_ENVIRON_ACTIVATION_KEY] = activation
+        # flask_request_environ[_ENVIRON_SPAN_KEY] = span
+        # flask_request_environ[_ENVIRON_TOKEN] = token
+
+    return _before_request
+
 
 class IncomingHandler(exports.IncomingHandler):
     """Simplified handler for incoming HTTP requests using blocking, buffered I/O."""
@@ -140,8 +233,9 @@ class IncomingHandler(exports.IncomingHandler):
         """Handle an incoming HTTP request and return a response or raise an error"""
         raise NotImplementedError
 
+    @_wrapped_before_request
     def handle(self, request: IncomingRequest, response_out: ResponseOutparam):
-        # print(f"Incoming Request Callstack: {inspect.stack()}")
+        print(f"Incoming Request Callstack: {inspect.stack()}")
         method = request.method()
 
         if isinstance(method, Method_Get):
