@@ -200,6 +200,7 @@ def wrapped_before_request(func):
             debug(get_service_name() + "is simulating sleep of " + str(sleep_interval) + " seconds.")
             if sleep_interval != 0:
                 time.sleep(sleep_interval)
+        return func(self, request, response_out)
 
     return before_request
 
