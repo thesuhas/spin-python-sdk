@@ -510,7 +510,8 @@ def _instrumented_requests_call(
                                                  filibuster_new_test_execution_url(filibuster_url, get_service_name()),
                                                  get_or_create_headers(), '')
                 if response is not None:
-                    response = response.json()
+                    response = json.loads(response.body.decode('utf-8'))
+                    debug(f"Response Body: {response}")
 
             debug("Removing instrumentation key for Filibuster.")
             # context.detach(token)
@@ -708,7 +709,7 @@ def _instrumented_requests_call(
                 # we should be able to avoid this -- it's because we're returning an invalid
                 # object through the opentelemetry instrumentation.
                 #
-                result = Response()
+                result = Response
         else:
             result = call_wrapped({})
     except Exception as exc:
@@ -836,7 +837,7 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
         elif counterexample is not None:
             notice("Skipping request, replaying from local counterexample.")
         else:
-            response = make_request_and_send('put', filibuster_create_url(filibuster_url), {}, payload)
+            response = make_request_and_send_normal('put', filibuster_create_url(filibuster_url), {'Content-Type': 'application/json'}, payload)
     except Exception as e:
         warning("Exception raised (_record_call)!")
         print(e, file=sys.stderr)
@@ -849,7 +850,7 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
         parsed_content = response
     elif response is not None:
         try:
-            parsed_content = response.json()
+            parsed_content = json.loads(response.body.decode('utf-8'))
         except Exception as e:
             warning("Exception raised (_record_call get_json)!")
             print(e, file=sys.stderr)
@@ -893,7 +894,7 @@ def _record_successful_response(generated_id, execution_index, vclock, result):
                 'vclock': vclock,
                 'return_value': return_value
             }
-            make_request_and_send('post', filibuster_update_url(filibuster_url), {}, payload)
+            make_request_and_send_normal('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, payload)
         except Exception as e:
             warning("Exception raised (_record_successful_response)!")
             print(e, file=sys.stderr)
@@ -934,7 +935,7 @@ def _record_exceptional_response(generated_id, execution_index, vclock, exceptio
             if should_abort is not True:
                 payload['exception']['metadata']['abort'] = should_abort
 
-            make_request_and_send('post', filibuster_update_url(filibuster_url), {}, payload)
+            make_request_and_send('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, payload)
         except Exception as e:
             warning("Exception raised (_record_exceptional_response)!")
             print(e, file=sys.stderr)
@@ -963,18 +964,20 @@ def send(request: Request, **kwargs) -> Response:
 
 @wrap_request
 def make_request_and_send(method, uri, headers, body):
+    debug(f"Making Request: {method} {uri} {headers} {body}")
     req = Request(method, uri, headers, body)
     return send(req)
 
 
 def normal_send(request: Request, **kwargs) -> Response:
     """Send an HTTP request and return a response or raise an error"""
-    # print(f"Outgoing Request Callstack: {inspect.stack()}")
+    debug(f"Sending request: {request.method} {request.uri}")
     loop = PollLoop()
     asyncio.set_event_loop(loop)
     return loop.run_until_complete(send_async(request))
 
 
 def make_request_and_send_normal(method, uri, headers, body):
+    debug(f"Making Request: {method} {uri} {headers} {body}")
     req = Request(method, uri, headers, body)
     return normal_send(req)
