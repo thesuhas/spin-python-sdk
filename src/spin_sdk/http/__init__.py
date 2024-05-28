@@ -127,9 +127,10 @@ class Response:
     headers: MutableMapping[str, str]
     body: Optional[bytes]
 
-def _wrapped_before_request(func):
+
+def wrapped_before_request(func):
     @functools.wraps(func)
-    def _before_request(self, request: IncomingRequest, response_out: ResponseOutparam):
+    def before_request(self, request: IncomingRequest, response_out: ResponseOutparam):
         # if _excluded_urls.url_disabled(flask.request.url):
         #     return
 
@@ -145,7 +146,8 @@ def _wrapped_before_request(func):
             request_id = str(uuid.uuid4())
             debug("Using new request_id: " + request_id)
         _filibuster_global_context_set_value(_FILIBUSTER_REQUEST_ID_KEY, request_id)
-        debug("** [FLASK] [" + get_service_name() + "]: request-id attached to context: " + str(_filibuster_global_context_get_value(_FILIBUSTER_REQUEST_ID_KEY)))
+        debug("** [FLASK] [" + get_service_name() + "]: request-id attached to context: " + str(
+            _filibuster_global_context_get_value(_FILIBUSTER_REQUEST_ID_KEY)))
 
         if headers.has('X-Filibuster-Execution-Index') and headers.get('X-Filibuster-Execution-Index') is not None:
 
@@ -158,18 +160,23 @@ def _wrapped_before_request(func):
 
             # All this is responsible for doing is putting the header execution index into the context
             # so that any requests that are triggered from this have the existing execution index.
-            _filibuster_global_context_set_value(_FILIBUSTER_EXECUTION_INDEX_KEY, headers.get('X-Filibuster-Execution-Index'))
-            debug("** [FLASK] [" + get_service_name() + "]: execution-index attached to context: " + str(_filibuster_global_context_get_value(_FILIBUSTER_EXECUTION_INDEX_KEY)))
+            _filibuster_global_context_set_value(_FILIBUSTER_EXECUTION_INDEX_KEY,
+                                                 headers.get('X-Filibuster-Execution-Index'))
+            debug("** [FLASK] [" + get_service_name() + "]: execution-index attached to context: " + str(
+                _filibuster_global_context_get_value(_FILIBUSTER_EXECUTION_INDEX_KEY)))
 
             # All this is responsible for doing is putting the header vclock into the context
             # so that any requests that are triggered from this, know to merge the incoming vclock in.
             _filibuster_global_context_set_value(_FILIBUSTER_VCLOCK_KEY, headers.get('X-Filibuster-VClock'))
-            debug("** [FLASK] [" + get_service_name() + "]: vclock attached to context: " + str(_filibuster_global_context_get_value(_FILIBUSTER_VCLOCK_KEY)))
+            debug("** [FLASK] [" + get_service_name() + "]: vclock attached to context: " + str(
+                _filibuster_global_context_get_value(_FILIBUSTER_VCLOCK_KEY)))
 
             # All this is responsible for doing is putting the header origin vclock into the context
             # so that any requests that are triggered from this, know to merge the incoming vclock in.
-            _filibuster_global_context_set_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY, headers.get('X-Filibuster-Origin-VClock'))
-            debug("** [FLASK] [" + get_service_name() + "]: origin-vclock attached to context: " + str(_filibuster_global_context_get_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY)))
+            _filibuster_global_context_set_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY,
+                                                 headers.get('X-Filibuster-Origin-VClock'))
+            debug("** [FLASK] [" + get_service_name() + "]: origin-vclock attached to context: " + str(
+                _filibuster_global_context_get_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY)))
 
             if not (os.environ.get('DISABLE_SERVER_COMMUNICATION', '')) and counterexample is None:
                 try:
@@ -183,47 +190,18 @@ def _wrapped_before_request(func):
                 finally:
                     debug("Removing instrumentation key for Filibuster.")
                     # context.detach(token)
+        else:
+            debug("No filibuster execution index present")
 
         # If we should delay the request to simulate timeouts, do it.
         if headers.has('X-Filibuster-Forced-Sleep') and headers.get('X-Filibuster-Forced-Sleep') is not None:
             sleep_interval_string = headers.get('X-Filibuster-Forced-Sleep')
             sleep_interval = int(sleep_interval_string)
+            debug(get_service_name() + "is simulating sleep of " + str(sleep_interval) + " seconds.")
             if sleep_interval != 0:
                 time.sleep(sleep_interval)
-        #
-        # flask_request_environ = flask.request.environ
-        # span_name = name_callback()
-        # token = context.attach(
-        #     propagators.extract(
-        #         otel_wsgi.carrier_getter, flask_request_environ
-        #     )
-        # )
-        #
-        # tracer = trace.get_tracer(__name__, __version__)
-        #
-        # span = tracer.start_span(
-        #     span_name,
-        #     kind=trace.SpanKind.SERVER,
-        #     start_time=flask_request_environ.get(_ENVIRON_STARTTIME_KEY),
-        # )
-        # if span.is_recording():
-        #     attributes = otel_wsgi.collect_request_attributes(
-        #         flask_request_environ
-        #     )
-        #     if flask.request.url_rule:
-        #         # For 404 that result from no route found, etc, we
-        #         # don't have a url_rule.
-        #         attributes["http.route"] = flask.request.url_rule.rule
-        #     for key, value in attributes.items():
-        #         span.set_attribute(key, value)
-        #
-        # activation = tracer.use_span(span, end_on_exit=True)
-        # activation.__enter__()
-        # flask_request_environ[_ENVIRON_ACTIVATION_KEY] = activation
-        # flask_request_environ[_ENVIRON_SPAN_KEY] = span
-        # flask_request_environ[_ENVIRON_TOKEN] = token
 
-    return _before_request
+    return before_request
 
 
 class IncomingHandler(exports.IncomingHandler):
@@ -233,7 +211,7 @@ class IncomingHandler(exports.IncomingHandler):
         """Handle an incoming HTTP request and return a response or raise an error"""
         raise NotImplementedError
 
-    @_wrapped_before_request
+    @wrapped_before_request
     def handle(self, request: IncomingRequest, response_out: ResponseOutparam):
         print(f"Incoming Request Callstack: {inspect.stack()}")
         method = request.method()
@@ -439,13 +417,16 @@ def wrap_request(func):
 
         debug("instrumented_send exiting; method: " + method + " url: " + uri)
         return response
+
     return instrumented_request
+
 
 def wrap_send(func):
     @functools.wraps(func)
     def instrumented_send(request: Request, **kwargs) -> Response:
         debug("instrumented_request entering; method: " + request.method + " url: " + request.uri)
         pprint(os.environ)
+
         def get_or_create_headers():
             headers = request.headers
             if headers is None:
@@ -464,7 +445,7 @@ def wrap_send(func):
                     headers[key] = additional_headers[key]
                 request.headers = headers
             else:
-               request.headers = additional_headers
+                request.headers = additional_headers
 
             response = normal_send(request)
             debug("instrumented_request.call_wrapped exiting")
@@ -476,10 +457,12 @@ def wrap_send(func):
 
         debug("instrumented_request exiting; method: " + request.method + " url: " + request.uri)
         return response
+
     return instrumented_send
 
+
 def _instrumented_requests_call(
-       method: str, url: str, call_wrapped, get_or_create_headers, **kwargs
+        method: str, url: str, call_wrapped, get_or_create_headers, **kwargs
 ):
     generated_id = None
     has_execution_index = False
@@ -522,7 +505,9 @@ def _instrumented_requests_call(
             _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
             response = None
             if not (os.environ.get('DISABLE_SERVER_COMMUNICATION', '')) and counterexample is None:
-                response = make_request_and_send('get', filibuster_new_test_execution_url(filibuster_url, get_service_name()), get_or_create_headers(), '')
+                response = make_request_and_send('get',
+                                                 filibuster_new_test_execution_url(filibuster_url, get_service_name()),
+                                                 get_or_create_headers(), '')
                 if response is not None:
                     response = response.json()
 
@@ -965,6 +950,7 @@ def unique_request_hash(args):
     hex_digest = hashlib.md5(hash_string.encode()).hexdigest()
     return hex_digest
 
+
 @wrap_send
 def send(request: Request, **kwargs) -> Response:
     """Send an HTTP request and return a response or raise an error"""
@@ -973,10 +959,12 @@ def send(request: Request, **kwargs) -> Response:
     asyncio.set_event_loop(loop)
     return loop.run_until_complete(send_async(request))
 
+
 @wrap_request
 def make_request_and_send(method, uri, headers, body):
     req = Request(method, uri, headers, body)
     return send(req)
+
 
 def normal_send(request: Request, **kwargs) -> Response:
     """Send an HTTP request and return a response or raise an error"""
@@ -984,6 +972,7 @@ def normal_send(request: Request, **kwargs) -> Response:
     loop = PollLoop()
     asyncio.set_event_loop(loop)
     return loop.run_until_complete(send_async(request))
+
 
 def make_request_and_send_normal(method, uri, headers, body):
     req = Request(method, uri, headers, body)
