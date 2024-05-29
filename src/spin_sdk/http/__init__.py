@@ -140,7 +140,7 @@ def wrapped_before_request(func):
         # doesn't already exist (new request), otherwise use the existing one.
         headers = request.headers()
         if headers.has('X-Filibuster-Request-Id') and headers.get('X-Filibuster-Request-Id') is not None:
-            request_id = headers['X-Filibuster-Request-Id']
+            request_id = bytes.join(b'', headers.get('X-Filibuster-Request-Id')).decode('utf-8')
             debug("Using old request_id: " + request_id)
         else:
             request_id = str(uuid.uuid4())
@@ -153,28 +153,28 @@ def wrapped_before_request(func):
 
             payload = {
                 'instrumentation_type': 'request_received',
-                'generated_id': str(headers.get('X-Filibuster-Generated-Id')),
-                'execution_index': str(headers.get('X-Filibuster-Execution-Index')),
+                'generated_id': str(bytes.join(b'', headers.get('X-Filibuster-Generated-Id')).decode('utf-8')),
+                'execution_index': str(bytes.join(b'', headers.get('X-Filibuster-Execution-Index')).decode('utf-8')),
                 'target_service_name': get_service_name(),
             }
 
             # All this is responsible for doing is putting the header execution index into the context
             # so that any requests that are triggered from this have the existing execution index.
             _filibuster_global_context_set_value(_FILIBUSTER_EXECUTION_INDEX_KEY,
-                                                 headers.get('X-Filibuster-Execution-Index'))
+                                                 bytes.join(b'', headers.get('X-Filibuster-Execution-Index')).decode('utf-8'))
             debug("** [FLASK] [" + get_service_name() + "]: execution-index attached to context: " + str(
                 _filibuster_global_context_get_value(_FILIBUSTER_EXECUTION_INDEX_KEY)))
 
             # All this is responsible for doing is putting the header vclock into the context
             # so that any requests that are triggered from this, know to merge the incoming vclock in.
-            _filibuster_global_context_set_value(_FILIBUSTER_VCLOCK_KEY, headers.get('X-Filibuster-VClock'))
+            _filibuster_global_context_set_value(_FILIBUSTER_VCLOCK_KEY, bytes.join(b'', headers.get('X-Filibuster-VClock')).decode('utf-8'))
             debug("** [FLASK] [" + get_service_name() + "]: vclock attached to context: " + str(
                 _filibuster_global_context_get_value(_FILIBUSTER_VCLOCK_KEY)))
 
             # All this is responsible for doing is putting the header origin vclock into the context
             # so that any requests that are triggered from this, know to merge the incoming vclock in.
             _filibuster_global_context_set_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY,
-                                                 headers.get('X-Filibuster-Origin-VClock'))
+                                                 bytes.join(b'', headers.get('X-Filibuster-Origin-VClock')).decode('utf-8'))
             debug("** [FLASK] [" + get_service_name() + "]: origin-vclock attached to context: " + str(
                 _filibuster_global_context_get_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY)))
 
@@ -183,7 +183,7 @@ def wrapped_before_request(func):
                     debug("Setting Filibuster instrumentation key...")
                     _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
 
-                    make_request_and_send_normal('post', filibuster_update_url(filibuster_url), {}, payload)
+                    make_request_and_send_normal('post', filibuster_update_url(filibuster_url), {}, json.dumps(payload).encode('utf-8'))
                 except Exception as e:
                     warning("Exception raised during instrumentation (_record_successful_response)!")
                     print(e, file=sys.stderr)
@@ -195,7 +195,7 @@ def wrapped_before_request(func):
 
         # If we should delay the request to simulate timeouts, do it.
         if headers.has('X-Filibuster-Forced-Sleep') and headers.get('X-Filibuster-Forced-Sleep') is not None:
-            sleep_interval_string = headers.get('X-Filibuster-Forced-Sleep')
+            sleep_interval_string = bytes.join(b'', headers.get('X-Filibuster-Forced-Sleep')).decode('utf-8')
             sleep_interval = int(sleep_interval_string)
             debug(get_service_name() + "is simulating sleep of " + str(sleep_interval) + " seconds.")
             if sleep_interval != 0:
@@ -511,7 +511,7 @@ def _instrumented_requests_call(
                                                  get_or_create_headers(), '')
                 if response is not None:
                     response = json.loads(response.body.decode('utf-8'))
-                    debug(f"Response Body: {response}")
+                    # debug(f"Response Body: {response}")
 
             debug("Removing instrumentation key for Filibuster.")
             # context.detach(token)
@@ -837,7 +837,7 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
         elif counterexample is not None:
             notice("Skipping request, replaying from local counterexample.")
         else:
-            response = make_request_and_send_normal('put', filibuster_create_url(filibuster_url), {'Content-Type': 'application/json'}, payload)
+            response = make_request_and_send_normal('put', filibuster_create_url(filibuster_url), {'Content-Type': 'application/json'}, json.dumps(payload).encode('utf-8'))
     except Exception as e:
         warning("Exception raised (_record_call)!")
         print(e, file=sys.stderr)
@@ -885,7 +885,7 @@ def _record_successful_response(generated_id, execution_index, vclock, result):
             return_value = {
                 '__class__': str(result.__class__.__name__),
                 'status_code': str(result.status),
-                'text': hashlib.md5(result.text.encode()).hexdigest()
+                'text': hashlib.md5(result.body.decode('utf-8').encode()).hexdigest()
             }
             payload = {
                 'instrumentation_type': 'invocation_complete',
@@ -894,7 +894,7 @@ def _record_successful_response(generated_id, execution_index, vclock, result):
                 'vclock': vclock,
                 'return_value': return_value
             }
-            make_request_and_send_normal('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, payload)
+            make_request_and_send_normal('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, json.dumps(payload).encode('utf-8'))
         except Exception as e:
             warning("Exception raised (_record_successful_response)!")
             print(e, file=sys.stderr)
@@ -935,7 +935,7 @@ def _record_exceptional_response(generated_id, execution_index, vclock, exceptio
             if should_abort is not True:
                 payload['exception']['metadata']['abort'] = should_abort
 
-            make_request_and_send('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, payload)
+            make_request_and_send('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, json.dumps(payload).encode('utf-8'))
         except Exception as e:
             warning("Exception raised (_record_exceptional_response)!")
             print(e, file=sys.stderr)
@@ -964,20 +964,20 @@ def send(request: Request, **kwargs) -> Response:
 
 @wrap_request
 def make_request_and_send(method, uri, headers, body):
-    debug(f"Making Request: {method} {uri} {headers} {body}")
+    # debug(f"Making Request: {method} {uri} {headers} {body}")
     req = Request(method, uri, headers, body)
     return send(req)
 
 
 def normal_send(request: Request, **kwargs) -> Response:
     """Send an HTTP request and return a response or raise an error"""
-    debug(f"Sending request: {request.method} {request.uri}")
+    # debug(f"Sending request: {request.method} {request.uri}")
     loop = PollLoop()
     asyncio.set_event_loop(loop)
     return loop.run_until_complete(send_async(request))
 
 
 def make_request_and_send_normal(method, uri, headers, body):
-    debug(f"Making Request: {method} {uri} {headers} {body}")
+    # debug(f"Making Request: {method} {uri} {headers} {body}")
     req = Request(method, uri, headers, body)
     return normal_send(req)
