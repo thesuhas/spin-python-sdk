@@ -7,6 +7,8 @@ import os
 import hashlib
 import re
 import traceback
+
+import spin_sdk.server_helper
 from spin_sdk.http import poll_loop
 from spin_sdk.http.poll_loop import PollLoop, Sink, Stream
 from spin_sdk.wit import exports
@@ -28,8 +30,8 @@ import importlib
 import functools
 import inspect
 from threading import Lock
-from spin_sdk.global_context import get_value as _filibuster_global_context_get_value
-from spin_sdk.global_context import set_value as _filibuster_global_context_set_value
+from spin_sdk.spin_context import get_value as _filibuster_global_context_get_value
+from spin_sdk.spin_context import set_value as _filibuster_global_context_set_value
 from spin_sdk.filibuster_helper import should_fail_request_with, load_counterexample, get_full_traceback_hash, \
     should_load_counterexample_file, counterexample_file
 from spin_sdk.vclock import vclock_new, vclock_increment, vclock_tostring, vclock_fromstring, vclock_equals, \
@@ -39,7 +41,7 @@ from spin_sdk.execution_index import execution_index_new, execution_index_push, 
 from spin_sdk.nginx_http_special_response import get_response
 from spin_sdk.datatypes import TestExecution
 from pprint import pprint
-from spin_sdk.logger import warning, debug, notice, info
+from spin_sdk.spin_logger import warning, debug, notice, info
 import uuid
 import time
 
@@ -89,6 +91,7 @@ filibuster_url = None
 def set_filibuster_url(url):
     global filibuster_url
     filibuster_url = url
+    notice(f"Filibuster URL set to {filibuster_url} by {get_service_name()}")
 
 
 def set_service_name(service_name):
@@ -131,6 +134,7 @@ class Response:
 def wrapped_before_request(func):
     @functools.wraps(func)
     def before_request(self, request: IncomingRequest, response_out: ResponseOutparam):
+        global filibuster_url
         # if _excluded_urls.url_disabled(flask.request.url):
         #     return
 
@@ -139,15 +143,16 @@ def wrapped_before_request(func):
         # can distinguish one request from another. Generate a new unique request_id if one
         # doesn't already exist (new request), otherwise use the existing one.
         headers = request.headers()
+        notice(f"Request headers: {headers.entries()}")
         if headers.has('X-Filibuster-Request-Id') and headers.get('X-Filibuster-Request-Id') is not None:
             request_id = bytes.join(b'', headers.get('X-Filibuster-Request-Id')).decode('utf-8')
-            debug("Using old request_id: " + request_id)
+            debug("Using old request_id: " + request_id, service_name=get_service_name())
         else:
             request_id = str(uuid.uuid4())
-            debug("Using new request_id: " + request_id)
+            debug("Using new request_id: " + request_id, service_name=get_service_name())
         _filibuster_global_context_set_value(_FILIBUSTER_REQUEST_ID_KEY, request_id)
         debug("** [FLASK] [" + get_service_name() + "]: request-id attached to context: " + str(
-            _filibuster_global_context_get_value(_FILIBUSTER_REQUEST_ID_KEY)))
+            _filibuster_global_context_get_value(_FILIBUSTER_REQUEST_ID_KEY)), service_name=get_service_name())
 
         if headers.has('X-Filibuster-Execution-Index') and headers.get('X-Filibuster-Execution-Index') is not None:
 
@@ -163,41 +168,42 @@ def wrapped_before_request(func):
             _filibuster_global_context_set_value(_FILIBUSTER_EXECUTION_INDEX_KEY,
                                                  bytes.join(b'', headers.get('X-Filibuster-Execution-Index')).decode('utf-8'))
             debug("** [FLASK] [" + get_service_name() + "]: execution-index attached to context: " + str(
-                _filibuster_global_context_get_value(_FILIBUSTER_EXECUTION_INDEX_KEY)))
+                _filibuster_global_context_get_value(_FILIBUSTER_EXECUTION_INDEX_KEY)), service_name=get_service_name())
 
             # All this is responsible for doing is putting the header vclock into the context
             # so that any requests that are triggered from this, know to merge the incoming vclock in.
             _filibuster_global_context_set_value(_FILIBUSTER_VCLOCK_KEY, bytes.join(b'', headers.get('X-Filibuster-VClock')).decode('utf-8'))
             debug("** [FLASK] [" + get_service_name() + "]: vclock attached to context: " + str(
-                _filibuster_global_context_get_value(_FILIBUSTER_VCLOCK_KEY)))
+                _filibuster_global_context_get_value(_FILIBUSTER_VCLOCK_KEY)), service_name=get_service_name())
 
             # All this is responsible for doing is putting the header origin vclock into the context
             # so that any requests that are triggered from this, know to merge the incoming vclock in.
             _filibuster_global_context_set_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY,
                                                  bytes.join(b'', headers.get('X-Filibuster-Origin-VClock')).decode('utf-8'))
             debug("** [FLASK] [" + get_service_name() + "]: origin-vclock attached to context: " + str(
-                _filibuster_global_context_get_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY)))
+                _filibuster_global_context_get_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY)), service_name=get_service_name())
 
             if not (os.environ.get('DISABLE_SERVER_COMMUNICATION', '')) and counterexample is None:
                 try:
-                    debug("Setting Filibuster instrumentation key...")
-                    _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
+                    debug("Setting Filibuster instrumentation key...", service_name=get_service_name())
+                    token = _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
 
-                    make_request_and_send_normal('post', filibuster_update_url(filibuster_url), {}, json.dumps(payload).encode('utf-8'))
+                    make_request_and_send('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, json.dumps(payload).encode('utf-8'))
                 except Exception as e:
                     warning("Exception raised during instrumentation (_record_successful_response)!")
                     print(e, file=sys.stderr)
                 finally:
-                    debug("Removing instrumentation key for Filibuster.")
+                    debug("Removing instrumentation key for Filibuster.", service_name=get_service_name())
                     # context.detach(token)
-        else:
-            debug("No filibuster execution index present")
+                    _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, token)
+        # else:
+        #     debug("No filibuster execution index present", service_name=get_service_name())
 
         # If we should delay the request to simulate timeouts, do it.
         if headers.has('X-Filibuster-Forced-Sleep') and headers.get('X-Filibuster-Forced-Sleep') is not None:
             sleep_interval_string = bytes.join(b'', headers.get('X-Filibuster-Forced-Sleep')).decode('utf-8')
             sleep_interval = int(sleep_interval_string)
-            debug(get_service_name() + "is simulating sleep of " + str(sleep_interval) + " seconds.")
+            debug(get_service_name() + "is simulating sleep of " + str(sleep_interval) + " seconds.", service_name=get_service_name())
             if sleep_interval != 0:
                 time.sleep(sleep_interval)
         return func(self, request, response_out)
@@ -395,7 +401,7 @@ async def send_and_close(sink: Sink, data: bytes):
 def wrap_request(func):
     @functools.wraps(func)
     def instrumented_request(method, uri, headers, body) -> Response:
-        debug("instrumented_send entering; method: " + method + " url: " + uri)
+        debug("instrumented_send entering; method: " + method + " url: " + uri, service_name=get_service_name())
 
         def get_or_create_headers():
             # request.headers = (
@@ -406,17 +412,17 @@ def wrap_request(func):
             return headers
 
         def call_wrapped(additional_headers):
-            debug("instrumented_send.call_wrapped entering")
+            debug("instrumented_send.call_wrapped entering", service_name=get_service_name())
             request = Request(method, uri, headers, body)
             response = normal_send(request)
-            debug("instrumented_send.call_wrapped exiting")
+            debug("instrumented_send.call_wrapped exiting", service_name=get_service_name())
             return response
 
         response = _instrumented_requests_call(
             method, uri, call_wrapped, get_or_create_headers
         )
 
-        debug("instrumented_send exiting; method: " + method + " url: " + uri)
+        debug("instrumented_send exiting; method: " + method + " url: " + uri, service_name=get_service_name())
         return response
 
     return instrumented_request
@@ -425,7 +431,7 @@ def wrap_request(func):
 def wrap_send(func):
     @functools.wraps(func)
     def instrumented_send(request: Request, **kwargs) -> Response:
-        debug("instrumented_request entering; method: " + request.method + " url: " + request.uri)
+        debug("instrumented_request entering; method: " + request.method + " url: " + request.uri, service_name=get_service_name())
         pprint(os.environ)
 
         def get_or_create_headers():
@@ -437,7 +443,7 @@ def wrap_send(func):
             return headers
 
         def call_wrapped(additional_headers):
-            debug("instrumented_request.call_wrapped entering")
+            debug(f"instrumented_request.call_wrapped entering: {additional_headers}", service_name=get_service_name())
 
             # Merge headers: don't worry about collisions, we're only adding information.
             if request.headers is not None:
@@ -448,15 +454,15 @@ def wrap_send(func):
             else:
                 request.headers = additional_headers
 
-            response = normal_send(request)
-            debug("instrumented_request.call_wrapped exiting")
+            response = send(request)
+            debug("instrumented_request.call_wrapped exiting", service_name=get_service_name())
             return response
 
         response = _instrumented_requests_call(
             request.method, request.uri, call_wrapped, get_or_create_headers, **kwargs
         )
 
-        debug("instrumented_request exiting; method: " + request.method + " url: " + request.uri)
+        debug("instrumented_request exiting; method: " + request.method + " url: " + request.uri, service_name=get_service_name())
         return response
 
     return instrumented_send
@@ -473,15 +479,15 @@ def _instrumented_requests_call(
     should_abort = True
     should_sleep_interval = 0
 
-    debug("_instrumented_requests_call entering; method: " + method + " url: " + url)
+    debug("_instrumented_requests_call entering; method: " + method + " url: " + url, service_name=get_service_name())
 
     # Bail early if we are in nested instrumentation calls.
-
+    debug(f"Filibuster Suppress Instrumentation: {_filibuster_global_context_get_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY)} {_filibuster_global_context_get_value('suppress_instrumentation')}", service_name=get_service_name())
     if _filibuster_global_context_get_value("suppress_instrumentation") or _filibuster_global_context_get_value(
             _FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY
     ):
         debug(
-            "_instrumented_requests_call returning call_wrapped() because _FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY set.")
+            "_instrumented_requests_call returning call_wrapped() because _FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY set.", service_name=get_service_name())
         return call_wrapped({})
 
     vclock = None
@@ -495,15 +501,15 @@ def _instrumented_requests_call(
         if not _filibuster_global_context_get_value("suppress_instrumentation"):
             callsite_file, callsite_line, full_traceback_hash = get_full_traceback_hash(get_service_name())
 
-            debug("")
-            debug("Recording call using Filibuster instrumentation service. ********************")
+            debug("", service_name=get_service_name())
+            debug("Recording call using Filibuster instrumentation service. ********************", service_name=get_service_name())
 
             # VClock handling.
 
             # Figure out if we should reset the node's vector clock, which should happen in between test executions.
-            debug("Setting Filibuster instrumentation key...")
+            debug("Setting Filibuster instrumentation key...", service_name=get_service_name())
             # token = context.attach(_filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True))
-            _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
+            token = _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
             response = None
             if not (os.environ.get('DISABLE_SERVER_COMMUNICATION', '')) and counterexample is None:
                 response = make_request_and_send('get',
@@ -513,8 +519,9 @@ def _instrumented_requests_call(
                     response = json.loads(response.body.decode('utf-8'))
                     # debug(f"Response Body: {response}")
 
-            debug("Removing instrumentation key for Filibuster.")
-            # context.detach(token)
+            debug("Removing instrumentation key for Filibuster.", service_name=get_service_name())
+            # context.detach(token) Detatch the context
+            _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, token)
             reset_local_vclock = False
             if response and ('new-test-execution' in response) and (response['new-test-execution']):
                 reset_local_vclock = True
@@ -526,7 +533,7 @@ def _instrumented_requests_call(
 
             if reset_local_vclock:
                 # Reset everything, since there is a new test execution.
-                debug("New test execution. Resetting vclocks_by_request and execution_indices_by_request.")
+                debug("New test execution. Resetting vclocks_by_request and execution_indices_by_request.", service_name=get_service_name())
 
                 vclocks_by_request = {request_id_string: vclock_new()}
                 _filibuster_global_context_set_value(_FILIBUSTER_VCLOCK_BY_REQUEST_KEY, vclocks_by_request)
@@ -621,7 +628,7 @@ def _instrumented_requests_call(
             # (flask receives context via header and sets into context object; requests reads it.)
             incoming_origin_vclock_string = _filibuster_global_context_get_value(_FILIBUSTER_ORIGIN_VCLOCK_KEY)
             debug("** [REQUESTS] [" + get_service_name() + "]: getting incoming origin vclock string: " + str(
-                incoming_origin_vclock_string))
+                incoming_origin_vclock_string), service_name=get_service_name())
 
             # This isn't used in the record_call, but just propagated through the headers in the subsequent request.
             origin_vclock = vclock
@@ -660,15 +667,15 @@ def _instrumented_requests_call(
                         status_code = response['failure_metadata']['return_value']['status_code']
                         should_inject_fault = True
 
-            debug("Finished recording call using Filibuster instrumentation service. ***********")
-            debug("")
+            debug("Finished recording call using Filibuster instrumentation service. ***********", service_name=get_service_name())
+            debug("", service_name=get_service_name())
         else:
-            debug("Instrumentation suppressed, skipping Filibuster instrumentation.")
+            debug("Instrumentation suppressed, skipping Filibuster instrumentation.", service_name=get_service_name())
 
     try:
-        debug("Setting Filibuster instrumentation key...")
+        debug("Setting Filibuster instrumentation key...", service_name=get_service_name())
         # token = context.attach(_filibuster_global_context_set_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY, True))
-        _filibuster_global_context_set_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY, True)
+        token = _filibuster_global_context_set_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY, True)
         if has_execution_index:
             request_id = _filibuster_global_context_get_value("filibuster_request_id")
             if not should_inject_fault:
@@ -716,12 +723,13 @@ def _instrumented_requests_call(
         exception = exc
         result = getattr(exc, "response", None)
     finally:
-        debug("Removing instrumentation key for Filibuster.")
+        debug("Removing instrumentation key for Filibuster.", service_name=get_service_name())
         # context.detach(token)
+        _filibuster_global_context_set_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY, token)
 
     # Result was an actual response.
     if isinstance(result, Response) and (exception is None or exception == "None"):
-        debug("_instrumented_requests_call got response!")
+        debug("_instrumented_requests_call got response!", service_name=get_service_name())
 
         if has_execution_index:
             _update_execution_index()
@@ -744,9 +752,9 @@ def _instrumented_requests_call(
 
         # if result.raw and result.raw.version:
         #     version = (str(result.raw.version)[:1] + "." + str(result.raw.version)[:-1])
-        #     debug("=> http.version: " + version)
+        #     debug("=> http.version: " + version, service_name=get_service_name())
 
-        debug("=> http.status_code: " + str(result.status))
+        debug("=> http.status_code: " + str(result.status), service_name=get_service_name())
 
     # Result was an exception.
     if exception is not None and exception != "None":
@@ -771,8 +779,8 @@ def _instrumented_requests_call(
             use_traceback = True
 
         if not _filibuster_global_context_get_value(_FILIBUSTER_INSTRUMENTATION_KEY):
-            debug("got exception!")
-            debug("=> exception: " + str(exception))
+            debug("got exception!", service_name=get_service_name())
+            debug("=> exception: " + str(exception), service_name=get_service_name())
 
             if has_execution_index:
                 _update_execution_index()
@@ -787,7 +795,7 @@ def _instrumented_requests_call(
             else:
                 raise exception
 
-    debug("_instrumented_requests_call exiting; method: " + method + " url: " + url)
+    debug("_instrumented_requests_call exiting; method: " + method + " url: " + url, service_name=get_service_name())
     return result
 
 
@@ -797,9 +805,9 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
     parsed_content = None
 
     try:
-        debug("Setting Filibuster instrumentation key...")
+        debug("Setting Filibuster instrumentation key...", service_name=get_service_name())
         # token = context.attach(_filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True))
-        _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
+        token = _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
         payload = {
             'instrumentation_type': 'invocation',
             'source_service_name': get_service_name(),
@@ -807,7 +815,7 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
             'method': method,
             'args': args,
             'kwargs': {},
-            'callsite_file': callsite_file,
+            'callsite_file': get_service_name() + callsite_file,
             'callsite_line': callsite_line,
             'full_traceback': full_traceback,
             'metadata': {},
@@ -818,7 +826,7 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
 
         if 'timeout' in kwargs:
             if kwargs['timeout'] is not None:
-                debug("=> timeout for call is set to " + str(kwargs['timeout']))
+                debug("=> timeout for call is set to " + str(kwargs['timeout']), service_name=get_service_name())
                 payload['metadata']['timeout'] = kwargs['timeout']
             try:
                 if args.index('https') >= 0:
@@ -837,20 +845,22 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
         elif counterexample is not None:
             notice("Skipping request, replaying from local counterexample.")
         else:
-            response = make_request_and_send_normal('put', filibuster_create_url(filibuster_url), {'Content-Type': 'application/json'}, json.dumps(payload).encode('utf-8'))
+            response = make_request_and_send('put', filibuster_create_url(filibuster_url), {'Content-Type': 'application/json'}, json.dumps(payload).encode('utf-8'))
     except Exception as e:
         warning("Exception raised (_record_call)!")
         print(e, file=sys.stderr)
         return None
     finally:
-        debug("Removing instrumentation key for Filibuster.")
+        debug("Removing instrumentation key for Filibuster.", service_name=get_service_name())
         # context.detach(token)
+        _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, token)
 
     if isinstance(response, dict):
         parsed_content = response
     elif response is not None:
         try:
             parsed_content = json.loads(response.body.decode('utf-8'))
+
         except Exception as e:
             warning("Exception raised (_record_call get_json)!")
             print(e, file=sys.stderr)
@@ -879,14 +889,15 @@ def _record_successful_response(generated_id, execution_index, vclock, result):
 
     if not (os.environ.get('DISABLE_SERVER_COMMUNICATION', '')) and counterexample is None:
         try:
-            debug("Setting Filibuster instrumentation key...")
+            debug("Setting Filibuster instrumentation key...", service_name=get_service_name())
             # token = context.attach()
-            _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
+            token = _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
             return_value = {
                 '__class__': str(result.__class__.__name__),
                 'status_code': str(result.status),
                 'text': hashlib.md5(result.body.decode('utf-8').encode()).hexdigest()
             }
+            debug(f'Successfully recorded response: {return_value}', service_name=get_service_name())
             payload = {
                 'instrumentation_type': 'invocation_complete',
                 'generated_id': generated_id,
@@ -894,13 +905,15 @@ def _record_successful_response(generated_id, execution_index, vclock, result):
                 'vclock': vclock,
                 'return_value': return_value
             }
-            make_request_and_send_normal('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, json.dumps(payload).encode('utf-8'))
+            debug(f"Payload: {payload}", service_name=get_service_name())
+            make_request_and_send('post', filibuster_update_url(filibuster_url), {'Content-Type': 'application/json'}, json.dumps(payload).encode('utf-8'))
         except Exception as e:
             warning("Exception raised (_record_successful_response)!")
             print(e, file=sys.stderr)
         finally:
-            debug("Removing instrumentation key for Filibuster.")
+            debug("Removing instrumentation key for Filibuster.", service_name=get_service_name())
             # context.detach(token)
+            _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, token)
 
     return True
 
@@ -911,9 +924,9 @@ def _record_exceptional_response(generated_id, execution_index, vclock, exceptio
 
     if not (os.environ.get('DISABLE_SERVER_COMMUNICATION', '')):
         try:
-            debug("Setting Filibuster instrumentation key...")
+            debug("Setting Filibuster instrumentation key...", service_name=get_service_name())
             # token = context.attach(_filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True))
-            _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
+            token = _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, True)
             exception_to_string = str(type(exception))
             parsed_exception_string = re.findall(r"'(.*?)'", exception_to_string, re.DOTALL)[0]
             payload = {
@@ -940,8 +953,9 @@ def _record_exceptional_response(generated_id, execution_index, vclock, exceptio
             warning("Exception raised (_record_exceptional_response)!")
             print(e, file=sys.stderr)
         finally:
-            debug("Removing instrumentation key for Filibuster.")
+            debug("Removing instrumentation key for Filibuster.", service_name=get_service_name())
             # context.detach(token)
+            _filibuster_global_context_set_value(_FILIBUSTER_INSTRUMENTATION_KEY, token)
 
     return True
 
@@ -966,18 +980,18 @@ def send(request: Request, **kwargs) -> Response:
 def make_request_and_send(method, uri, headers, body):
     # debug(f"Making Request: {method} {uri} {headers} {body}")
     req = Request(method, uri, headers, body)
-    return send(req)
+    return normal_send(req)
 
 
 def normal_send(request: Request, **kwargs) -> Response:
     """Send an HTTP request and return a response or raise an error"""
-    # debug(f"Sending request: {request.method} {request.uri}")
+    debug(f"Sending request: {request.method} {request.uri} {request.headers}", get_service_name())
     loop = PollLoop()
     asyncio.set_event_loop(loop)
     return loop.run_until_complete(send_async(request))
 
 
 def make_request_and_send_normal(method, uri, headers, body):
-    # debug(f"Making Request: {method} {uri} {headers} {body}")
+    # debug(f"Making Request: {method} {uri} {headers} {body}", service_name=get_service_name())
     req = Request(method, uri, headers, body)
     return normal_send(req)

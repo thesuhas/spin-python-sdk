@@ -30,6 +30,6 @@ def info(string):
     print(BColors.OKBLUE + "[FILIBUSTER] [INFO]: " + string + BColors.ENDC, file=sys.stderr, flush=True)
 
 
-def debug(string):
+def debug(string, service_name):
     if os.environ.get("DEBUG", ""):
-        print(BColors.OKCYAN + "[FILIBUSTER] [DEBUG]: " + string + BColors.ENDC, file=sys.stderr, flush=True)
+        print(BColors.OKCYAN + "[FILIBUSTER] [" + service_name + "] [DEBUG]: " + string + BColors.ENDC, file=sys.stderr, flush=True)
