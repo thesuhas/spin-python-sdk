@@ -401,28 +401,33 @@ async def send_and_close(sink: Sink, data: bytes):
 def wrap_request(func):
     @functools.wraps(func)
     def instrumented_request(method, uri, headers, body) -> Response:
-        debug("instrumented_send entering; method: " + method + " url: " + uri, service_name=get_service_name())
+        debug("instrumented_request entering; method: " + method + " url: " + uri, service_name=get_service_name())
 
         def get_or_create_headers():
-            # request.headers = (
-            #     request.headers
-            #     if request.headers is not None
-            #     else CaseInsensitiveDict()
-            # )
+            if not headers:
+                headers = {}
             return headers
 
         def call_wrapped(additional_headers):
-            debug("instrumented_send.call_wrapped entering", service_name=get_service_name())
-            request = Request(method, uri, headers, body)
-            response = normal_send(request)
-            debug("instrumented_send.call_wrapped exiting", service_name=get_service_name())
+            debug("instrumented_request.call_wrapped entering", service_name=get_service_name())
+            # request = Request(method, uri, headers, body)
+            # response = normal_send(request)
+            # debug("instrumented_send.call_wrapped exiting", service_name=get_service_name())
+            # return response
+            for key in additional_headers:
+                headers[key] = additional_headers[key]
+            # return headers
+            req = Request(method, uri, headers, body)
+            # response = make_request_and_send_normal(method, uri, headers, body)
+            response = send(req)
+            debug("instrumented_request.call_wrapped exiting", service_name=get_service_name())
             return response
 
         response = _instrumented_requests_call(
             method, uri, call_wrapped, get_or_create_headers
         )
 
-        debug("instrumented_send exiting; method: " + method + " url: " + uri, service_name=get_service_name())
+        debug("instrumented_request exiting; method: " + method + " url: " + uri, service_name=get_service_name())
         return response
 
     return instrumented_request
@@ -431,38 +436,32 @@ def wrap_request(func):
 def wrap_send(func):
     @functools.wraps(func)
     def instrumented_send(request: Request, **kwargs) -> Response:
-        debug("instrumented_request entering; method: " + request.method + " url: " + request.uri, service_name=get_service_name())
+        debug("instrumented_send entering; method: " + request.method + " url: " + request.uri, service_name=get_service_name())
         pprint(os.environ)
 
         def get_or_create_headers():
-            headers = request.headers
-            if headers is None:
-                headers = {}
-                request.headers = headers
+            # headers = request.headers
+            # if headers is None:
+            #     headers = {}
+            #     request.headers = headers
 
-            return headers
+            return request.headers
 
         def call_wrapped(additional_headers):
-            debug(f"instrumented_request.call_wrapped entering: {additional_headers}", service_name=get_service_name())
+            debug(f"instrumented_send.call_wrapped entering: {additional_headers}", service_name=get_service_name())
 
             # Merge headers: don't worry about collisions, we're only adding information.
-            if request.headers is not None:
-                headers = request.headers
-                for key in additional_headers:
-                    headers[key] = additional_headers[key]
-                request.headers = headers
-            else:
-                request.headers = additional_headers
-
-            response = send(request)
-            debug("instrumented_request.call_wrapped exiting", service_name=get_service_name())
+            for key in additional_headers:
+                request.headers[key] = additional_headers[key]
+            response = normal_send(request)
+            debug("instrumented_send.call_wrapped exiting", service_name=get_service_name())
             return response
 
         response = _instrumented_requests_call(
             request.method, request.uri, call_wrapped, get_or_create_headers, **kwargs
         )
 
-        debug("instrumented_request exiting; method: " + request.method + " url: " + request.uri, service_name=get_service_name())
+        debug("instrumented_send exiting; method: " + request.method + " url: " + request.uri, service_name=get_service_name())
         return response
 
     return instrumented_send
@@ -673,12 +672,13 @@ def _instrumented_requests_call(
             debug("Instrumentation suppressed, skipping Filibuster instrumentation.", service_name=get_service_name())
 
     try:
-        debug("Setting Filibuster instrumentation key...", service_name=get_service_name())
+        debug("Setting Filibuster suppress instrumentation key...", service_name=get_service_name())
         # token = context.attach(_filibuster_global_context_set_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY, True))
         token = _filibuster_global_context_set_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY, True)
         if has_execution_index:
             request_id = _filibuster_global_context_get_value("filibuster_request_id")
             if not should_inject_fault:
+                debug("Should not inject fault.", service_name=get_service_name())
                 # Propagate vclock and origin vclock forward.
                 result = call_wrapped(
                     {
@@ -690,6 +690,7 @@ def _instrumented_requests_call(
                     }
                 )
             elif should_inject_fault and not should_abort:
+                debug("Should inject fault and not abort.", service_name=get_service_name())
                 # Propagate vclock and origin vclock forward.
                 result = call_wrapped(
                     {
@@ -702,6 +703,7 @@ def _instrumented_requests_call(
                     }
                 )
             else:
+                debug("Fake response", service_name=get_service_name())
                 # Return entirely fake response and do not make request.
                 #
                 # Since this isn't a real result object, there's some attribute that's
@@ -718,14 +720,15 @@ def _instrumented_requests_call(
                 #
                 result = Response
         else:
+            debug("No execution index", service_name=get_service_name())
             result = call_wrapped({})
     except Exception as exc:
         exception = exc
         result = getattr(exc, "response", None)
     finally:
-        debug("Removing instrumentation key for Filibuster.", service_name=get_service_name())
+        debug("Removing instrumentation suppress key for Filibuster.", service_name=get_service_name())
         # context.detach(token)
-        _filibuster_global_context_set_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY, token)
+        _filibuster_global_context_set_value(_FILIBUSTER_SUPPRESS_REQUESTS_INSTRUMENTATION_KEY, False)
 
     # Result was an actual response.
     if isinstance(result, Response) and (exception is None or exception == "None"):
@@ -812,7 +815,7 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
             'instrumentation_type': 'invocation',
             'source_service_name': get_service_name(),
             'module': 'requests',
-            'method': method,
+            'method': method.lower(),
             'args': args,
             'kwargs': {},
             'callsite_file': get_service_name() + callsite_file,
