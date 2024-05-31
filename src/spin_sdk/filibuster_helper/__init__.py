@@ -74,7 +74,7 @@ def get_full_traceback_hash(service_name):
             tracebacks.append(curr_traceback)
 
     full_traceback = "\n".join(tracebacks)
-    print(f"Stacktrace: {full_traceback}")
+    #print(f"Stacktrace: {full_traceback}")
     full_traceback_hash = hashlib.md5(full_traceback.encode()).hexdigest()
 
     return callsite_file, callsite_line, full_traceback_hash

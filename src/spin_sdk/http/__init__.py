@@ -40,7 +40,6 @@ from spin_sdk.execution_index import execution_index_new, execution_index_push, 
     execution_index_tostring, execution_index_fromstring
 from spin_sdk.nginx_http_special_response import get_response
 from spin_sdk.datatypes import TestExecution
-from pprint import pprint
 from spin_sdk.spin_logger import warning, debug, notice, info
 import uuid
 import time
@@ -220,7 +219,7 @@ class IncomingHandler(exports.IncomingHandler):
 
     @wrapped_before_request
     def handle(self, request: IncomingRequest, response_out: ResponseOutparam):
-        print(f"Incoming Request Callstack: {inspect.stack()}")
+        #print(f"Incoming Request Callstack: {inspect.stack()}")
         method = request.method()
 
         if isinstance(method, Method_Get):
@@ -437,7 +436,6 @@ def wrap_send(func):
     @functools.wraps(func)
     def instrumented_send(request: Request, **kwargs) -> Response:
         debug("instrumented_send entering; method: " + request.method + " url: " + request.uri, service_name=get_service_name())
-        pprint(os.environ)
 
         def get_or_create_headers():
             # headers = request.headers
@@ -842,7 +840,7 @@ def _record_call(method, args, callsite_file, callsite_line, full_traceback, vcl
             response = should_fail_request_with(payload, counterexample_test_execution.failures)
             if response is None:
                 response = {'execution_index': execution_index}
-            print(response)
+            #print(response)
         if os.environ.get('DISABLE_SERVER_COMMUNICATION', ''):
             warning("Server communication disabled.")
         elif counterexample is not None:
